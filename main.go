@@ -18,13 +18,16 @@ type ApiResponse struct {
 }
 
 var (
-	client            = resty.New().SetTimeout(10 * time.Second)
-	cacheLock         sync.Mutex
-	exchangeCache     = "latest.json"
-	currenciesCache   = "currencies.json"
-	appID             = "APP_ID"
-	exchangeRateURL   = "https://openexchangerates.org/api/latest.json"
-	currenciesListURL = "https://openexchangerates.org/api/currencies.json"
+	client              = resty.New().SetTimeout(10 * time.Second)
+	cacheLock           sync.RWMutex
+	exchangeCache       interface{}
+	currenciesCache     interface{}
+	lastExchangeFetch   time.Time
+	lastCurrenciesFetch time.Time
+	appID               string
+	exchangeRateURL     = "https://openexchangerates.org/api/latest.json"
+	currenciesListURL   = "https://openexchangerates.org/api/currencies.json"
+	cacheDuration       = time.Hour
 )
 
 func fetchDataFromAPI(url string) (interface{}, error) {
@@ -41,74 +44,44 @@ func fetchDataFromAPI(url string) (interface{}, error) {
 	return jsonResponse, nil
 }
 
-func saveToCache(fileName string, data interface{}) error {
-	cacheLock.Lock()
-	defer cacheLock.Unlock()
-
-	fileData, err := json.Marshal(data)
-	if err != nil {
-		return err
+func getCachedData(url string, cache *interface{}, lastFetch *time.Time) (interface{}, error) {
+	cacheLock.RLock()
+	if time.Since(*lastFetch) < cacheDuration {
+		defer cacheLock.RUnlock()
+		return *cache, nil
 	}
+	cacheLock.RUnlock()
 
-	return os.WriteFile(fileName, fileData, 0644)
-}
-
-func loadFromCache(fileName string) (interface{}, error) {
-	cacheLock.Lock()
-	defer cacheLock.Unlock()
-
-	fileData, err := os.ReadFile(fileName)
+	// Fetch new data
+	data, err := fetchDataFromAPI(url)
 	if err != nil {
 		return nil, err
 	}
 
-	var jsonResponse interface{}
-	if err := json.Unmarshal(fileData, &jsonResponse); err != nil {
-		return nil, err
-	}
-
-	return jsonResponse, nil
-}
-
-func isCacheValid(fileName string) bool {
+	// Update cache
 	cacheLock.Lock()
-	defer cacheLock.Unlock()
+	*cache = data
+	*lastFetch = time.Now()
+	cacheLock.Unlock()
 
-	info, err := os.Stat(fileName)
-	if err != nil {
-		return false
-	}
-
-	modTime := info.ModTime()
-	return modTime.Year() == time.Now().Year() && modTime.YearDay() == time.Now().YearDay()
+	return data, nil
 }
 
 func getLatestExchangeRate(w http.ResponseWriter, r *http.Request) {
-	handleCachedAPI(w, exchangeRateURL+"?app_id="+appID, exchangeCache)
+	data, err := getCachedData(exchangeRateURL+"?app_id="+appID, &exchangeCache, &lastExchangeFetch)
+	if err != nil {
+		sendResponse(w, nil, "Failed to fetch exchange rates")
+		return
+	}
+	sendResponse(w, data, "")
 }
 
 func getCurrencyList(w http.ResponseWriter, r *http.Request) {
-	handleCachedAPI(w, currenciesListURL, currenciesCache)
-}
-
-func handleCachedAPI(w http.ResponseWriter, url, cacheFile string) {
-	var data interface{}
-	var err error
-
-	if isCacheValid(cacheFile) {
-		data, err = loadFromCache(cacheFile)
-	} else {
-		data, err = fetchDataFromAPI(url)
-		if err == nil {
-			_ = saveToCache(cacheFile, data)
-		}
-	}
-
+	data, err := getCachedData(currenciesListURL, &currenciesCache, &lastCurrenciesFetch)
 	if err != nil {
-		sendResponse(w, nil, "Failed to fetch data")
+		sendResponse(w, nil, "Failed to fetch currency list")
 		return
 	}
-
 	sendResponse(w, data, "")
 }
 
@@ -123,6 +96,12 @@ func sendResponse(w http.ResponseWriter, data interface{}, errMessage string) {
 }
 
 func main() {
+	// Retrieve APP_ID from environment variable
+	appID = os.Getenv("APP_ID")
+	if appID == "" {
+		log.Fatal("APP_ID environment variable is not set")
+	}
+
 	http.HandleFunc("/api/latest", getLatestExchangeRate)
 	http.HandleFunc("/api/currencies", getCurrencyList)
 
