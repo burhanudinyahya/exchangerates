@@ -12,11 +12,6 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-type ApiResponse struct {
-	Data  interface{} `json:"data"`
-	Error string      `json:"error,omitempty"`
-}
-
 var (
 	client              = resty.New().SetTimeout(10 * time.Second)
 	cacheLock           sync.RWMutex
@@ -70,29 +65,30 @@ func getCachedData(url string, cache *interface{}, lastFetch *time.Time) (interf
 func getLatestExchangeRate(w http.ResponseWriter, r *http.Request) {
 	data, err := getCachedData(exchangeRateURL+"?app_id="+appID, &exchangeCache, &lastExchangeFetch)
 	if err != nil {
-		sendResponse(w, nil, "Failed to fetch exchange rates")
+		sendErrorResponse(w, "Failed to fetch exchange rates")
 		return
 	}
-	sendResponse(w, data, "")
+	sendDataResponse(w, data)
 }
 
 func getCurrencyList(w http.ResponseWriter, r *http.Request) {
 	data, err := getCachedData(currenciesListURL, &currenciesCache, &lastCurrenciesFetch)
 	if err != nil {
-		sendResponse(w, nil, "Failed to fetch currency list")
+		sendErrorResponse(w, "Failed to fetch currency list")
 		return
 	}
-	sendResponse(w, data, "")
+	sendDataResponse(w, data)
 }
 
-func sendResponse(w http.ResponseWriter, data interface{}, errMessage string) {
+func sendDataResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	if errMessage != "" {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ApiResponse{Error: errMessage})
-	} else {
-		json.NewEncoder(w).Encode(ApiResponse{Data: data})
-	}
+	json.NewEncoder(w).Encode(data)
+}
+
+func sendErrorResponse(w http.ResponseWriter, errMessage string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	json.NewEncoder(w).Encode(map[string]string{"error": errMessage})
 }
 
 func main() {
