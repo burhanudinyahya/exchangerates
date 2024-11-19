@@ -22,7 +22,7 @@ var (
 	appID               string
 	exchangeRateURL     = "https://openexchangerates.org/api/latest.json"
 	currenciesListURL   = "https://openexchangerates.org/api/currencies.json"
-	cacheDuration       = time.Hour
+	cacheMinute         = 5
 )
 
 func fetchDataFromAPI(url string) (interface{}, error) {
@@ -39,21 +39,34 @@ func fetchDataFromAPI(url string) (interface{}, error) {
 	return jsonResponse, nil
 }
 
+func nextCacheExpirationTime() time.Time {
+	now := time.Now()
+	nextHour := now.Truncate(time.Hour).Add(time.Hour)
+	return nextHour.Add(time.Minute * time.Duration(cacheMinute))
+}
+
+func isCacheExpired(lastFetch time.Time) bool {
+	now := time.Now()
+	expiration := nextCacheExpirationTime()
+	if now.Before(expiration) && now.Sub(lastFetch) < time.Hour {
+		return false
+	}
+	return true
+}
+
 func getCachedData(url string, cache *interface{}, lastFetch *time.Time) (interface{}, error) {
 	cacheLock.RLock()
-	if time.Since(*lastFetch) < cacheDuration {
+	if !isCacheExpired(*lastFetch) {
 		defer cacheLock.RUnlock()
 		return *cache, nil
 	}
 	cacheLock.RUnlock()
 
-	// Fetch new data
 	data, err := fetchDataFromAPI(url)
 	if err != nil {
 		return nil, err
 	}
 
-	// Update cache
 	cacheLock.Lock()
 	*cache = data
 	*lastFetch = time.Now()
@@ -92,7 +105,6 @@ func sendErrorResponse(w http.ResponseWriter, errMessage string) {
 }
 
 func main() {
-	// Retrieve APP_ID from environment variable
 	appID = os.Getenv("APP_ID")
 	if appID == "" {
 		log.Fatal("APP_ID environment variable is not set")
